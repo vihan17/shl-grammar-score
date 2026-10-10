@@ -4,81 +4,77 @@ Kaggle competition: [shl-hiring-assessment-2026](https://www.kaggle.com/competit
 
 **Task.** Predict the `Grammar Score` of a speaker from a 45–60 s audio clip
 (the speaker describes a picture). The score is an IELTS-style Likert rating
-(rubric 1–5).
+(rubric 1–5, labels present 0–5).
 
 | | |
 |---|---|
 | Train clips | 769 (labelled) |
 | Test clips | 216 |
-| Evaluation | Pearson correlation + RMSE (lower RMSE is better) |
-| **Train RMSE (5-fold OOF)** | **0.7608** |
-| Train Pearson (5-fold OOF) | 0.7892 |
+| Evaluation | Pearson correlation + RMSE (lower RMSE better) |
+| **Train RMSE (5-fold OOF)** | **0.5090** |
+| **Public leaderboard RMSE (best)** | **0.3729** (rank 92/401, 2026-10-10) |
+| Leader | 0.3064 |
 
 ## Approach
 
-Two feature families feeding a blended gradient-boosting model.
+Three feature families → XGBoost + CatBoost, blended on OOF RMSE.
 
-### 1. Prosody / acoustic features (164)
+### 1. Whisper-large-v3 encoder embeddings (2560-d)
 
-Extracted with `librosa` from each clip:
+Mean + std pooling of the whisper-large-v3 encoder hidden states over 30 s
+windows (hop 25 s), extracted once on a free T4 (Colab) for all 985 clips —
+audio content in a dense, model-learned form. This was the single biggest
+lever (≈ −0.028 RMSE vs prosody-only).
 
-- MFCCs (20) + deltas, mean and std; mel bands (24) mean/std
-- chroma, spectral contrast (7 bands), rolloff, flatness, centroid, bandwidth
-- ZCR, RMS envelope percentiles, crest factor
-- F0 via `yin` (mean/std/quartiles, voiced ratio)
-- onset rate, inter-onset interval statistics, onset-strength stats, tempo
-- silence ratio, pause runs, spectral-flux dynamics
+### 2. Prosody / acoustics (164 librosa descriptors)
 
-### 2. Grammar features from speech content (21)
+MFCCs + deltas, mel bands, chroma, spectral contrast/rolloff/flatness/
+centroid/bandwidth, ZCR, RMS percentiles, crest factor, F0 (yin), onset
+statistics, tempo, silence & pause structure.
 
-Transcripts come from a **fine-tuned `wav2vec2-base-960h` CTC model**, loaded
-fully offline on Kaggle (weights mounted from a public Kaggle dataset;
-`config.json` templated from a second one because the published checkpoint
-ships without it). Per rules: **external models are allowed, external data is
-not** — no external data is used anywhere.
+### 3. Grammar features from speech content
 
-From the transcripts we derive grammar/fluency proxies:
+- **Transcripts** from `whisper-large-v3` (external model; no external
+  data) → word count/rate, type-token ratio, repetition, fillers, word
+  length stats, ASR confidence proxies.
+- **Gemini rubric grades** — an LLM scores each clip against the IELTS-style
+  rubric (1–5). Two streams, merged into one feature:
+  - per-clip grades (higher quality, full 985-clip coverage)
+  - batch grades (full coverage) as fallback
+  This LLM-judge feature was the second biggest lever (≈ −0.016).
 
-- word count, words-per-second, unique words, type-token ratio
-- mean/max/std word length, long-word and medium-word ratios
-- immediate repetition (1-gram and 2-gram), hesitation fillers
-- vowel ratio, one-letter-word ratio
-- ASR mean confidence, token entropy, blank rate, tokens/sec, empty flag
+### 4. Model
 
-### 3. Model
-
-- LightGBM (1500 trees, early stopping) + XGBoost (1200 trees)
-- 5-fold KFold, blend weight selected on out-of-fold RMSE
-- predictions clipped to `[0, 5]`
-- Rounding to the 0.5 label grid was tested and **rejected** — it hurt OOF
-  RMSE (0.7608 → 0.7730) and Pearson (0.7892 → 0.7813)
+- XGBoost + CatBoost, 5-fold KFold, predictions clipped [0, 5]
+- Block blend (raw embeddings + PCA-32 blocks) weights fitted on OOF RMSE
+- OOF→LB transfer checked against the public leaderboard every round
+  (OOF ranking proved unreliable on the 216-row test set — leaderboard
+  feedback drove all major decisions)
 
 ## Files
 
 | Path | What it is |
 |---|---|
-| `notebook/shl_grammar_score.ipynb` | Submission notebook: documented pipeline + train RMSE + evaluation plots |
-| `src/train_v3.py` | Same pipeline as a plain script (the notebook is generated from it) |
-| `submission/submission.csv` | Predictions for the 216 test clips (`filename,label`) |
+| `src/submit_v7.py` | Best recipe (embeddings + prosody + grades, 2-block blend) |
+| `src/local_train.py` | Feature loading: overlays whisper transcripts, merges Gemini grades |
+| `src/llm_grade.py` | Gemini per-clip rubric grading (resumable, multi-model fallback) |
+| `src/llm_grade_wsp.py` | Whisper-transcript wrapper around the grader |
+| `src/llm_grade_perclip.py` | Premium per-clip grading pass |
+| `src/llm_grade_audio.py` | Audio-native grading (prosody/disfluency from raw WAV) |
+| `src/build_hybrid.py` | Merges premium + batch grade streams |
+| `src/add_ppl.py` | GPT-2 perplexity text features (tried; not in best model) |
+| `src/train_v3.py` | Legacy baseline (LightGBM + wav2vec2 CTC, OOF 0.7608) — history |
+| `notebook/shl_grammar_score.ipynb` | Submission notebook (baseline pipeline + evaluation) |
+| `submission/submission.csv` | Best public-LB predictions (0.3729) |
 
-## Reproducing
+## What did NOT help (kept for the record)
 
-The notebook runs on Kaggle with no internet access:
-
-1. Competition data is pre-mounted at
-   `/kaggle/input/competitions/shl-hiring-assessment-2026/Dataset_Final`
-2. ASR weights are mounted from two public datasets:
-   `andgoogle/wav2vec2-base-960h-260507-1028` (weights) and
-   `warhero12/wav2vec2` (`config.json` template)
-3. Run the notebook — it prints `TRAIN RMSE (5-fold OOF)` and writes
-   `submission.csv`, `oof.csv`, `report.png`, `label_dist.png`,
-   `feature_importance.csv`
-
-Full pipeline (audio features + ASR + training) takes ≈2.5 h on 4 CPUs;
-feature and transcript caches make re-runs incremental.
+- wav2vec2-large embeddings — 5% blend weight, hurt LB (+0.010)
+- GPT-2 perplexity features — negatively correlated with label, hurt LB
+- Post-hoc OOF distribution stretching — helped OOF twice, hurt LB every time
 
 ## Compliance
 
 - No external data (per competition rules)
-- External **model** (`wav2vec2-base-960h`) used, which the rules permit
+- External **models** used (whisper-large-v3, Gemini), which the rules permit
 - Single participant, single team
