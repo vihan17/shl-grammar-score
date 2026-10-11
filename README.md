@@ -64,7 +64,8 @@ statistics, tempo, silence & pause structure.
 | `src/build_hybrid.py` | Merges premium + batch grade streams |
 | `src/add_ppl.py` | GPT-2 perplexity text features (tried; not in best model) |
 | `src/train_v3.py` | Legacy baseline (LightGBM + wav2vec2 CTC, OOF 0.7608) — history |
-| `notebook/shl_grammar_score.ipynb` | Submission notebook (baseline pipeline + evaluation) |
+| `notebook/shl_grammar_score.ipynb` | **Final documented pipeline** — run top-to-bottom to reproduce `submission.csv` and the OOF score from cached artifacts |
+| `artifacts/` | Cached artifacts (whisper embeddings, prosody cache, transcripts, LLM grades) so the notebook runs offline |
 | `submission/submission.csv` | Best public-LB predictions (0.3729) |
 
 ## What did NOT help (kept for the record)

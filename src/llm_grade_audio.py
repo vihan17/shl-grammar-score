@@ -214,6 +214,7 @@ def main():
             got = parse_scores(raw, expected)
         except Exception as e:
             print(f"batch {bi+1}/{n_batches} FAILED: {e}", flush=True)
+            bad += len(batch)
             break
         missing = [fn for _, fn in batch if fn not in got]
         for sp, fn in batch:
